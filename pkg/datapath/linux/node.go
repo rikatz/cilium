@@ -50,19 +50,20 @@ const (
 )
 
 type linuxNodeHandler struct {
-	mutex                lock.Mutex
-	isInitialized        bool
-	nodeConfig           datapath.LocalNodeConfiguration
-	nodeAddressing       datapath.NodeAddressing
-	datapathConfig       DatapathConfiguration
-	nodes                map[nodeTypes.Identity]*nodeTypes.Node
-	enableNeighDiscovery bool
-	neighDiscoveryLink   netlink.Link
-	neighNextHopByNode   map[nodeTypes.Identity]string // val = string(net.IP)
-	neighNextHopRefCount counter.StringCounter
-	neighByNextHop       map[string]*netlink.Neigh // key = string(net.IP)
-	neighLock            lock.Mutex
-	wgAgent              datapath.WireguardAgent
+	mutex                   lock.Mutex
+	isInitialized           bool
+	nodeConfig              datapath.LocalNodeConfiguration
+	nodeAddressing          datapath.NodeAddressing
+	datapathConfig          DatapathConfiguration
+	nodes                   map[nodeTypes.Identity]*nodeTypes.Node
+	enableNeighDiscovery    bool
+	neighDiscoveryLink      netlink.Link
+	neighDiscoveryLinkIsSet bool
+	neighNextHopByNode      map[nodeTypes.Identity]string // val = string(net.IP)
+	neighNextHopRefCount    counter.StringCounter
+	neighByNextHop          map[string]*netlink.Neigh // key = string(net.IP)
+	neighLock               lock.Mutex
+	wgAgent                 datapath.WireguardAgent
 }
 
 // NewNodeHandler returns a new node handler to handle node events and
@@ -668,6 +669,14 @@ func getSrcAndNextHopIPv4(nodeIPv4 net.IP) (srcIPv4, nextHopIPv4 net.IP, err err
 // this case it does not bail out early if the ARP entry already exists, and
 // sends the ARP request anyway.
 func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeTypes.Node, refresh bool) {
+	n.neighLock.Lock()
+	if n.neighDiscoveryLinkIsSet {
+		n.neighLock.Unlock()
+		// Nothing to do - the discovery link was not set yet
+		return
+	}
+	n.neighLock.Unlock()
+
 	newNodeIP := newNode.GetNodeIP(false).To4()
 	nextHopIPv4 := make(net.IP, len(newNodeIP))
 	copy(nextHopIPv4, newNodeIP)
@@ -732,7 +741,7 @@ func (n *linuxNodeHandler) insertNeighbor(ctx context.Context, newNode *nodeType
 	if nextHopIsNew || refresh {
 		hwAddr, err = arp.PingOverLink(n.neighDiscoveryLink, srcIPv4, nextHopIPv4)
 		if err != nil {
-			scopedLog.WithError(err).Info("arping failed")
+			scopedLog.WithError(err).Debug("arping failed")
 			metrics.ArpingRequestsTotal.WithLabelValues(failed).Inc()
 			return
 		}
@@ -1351,7 +1360,18 @@ func (n *linuxNodeHandler) NodeConfigurationChanged(newConfig datapath.LocalNode
 				return fmt.Errorf("cannot find link by name %s for neigh discovery: %w",
 					ifaceName, err)
 			}
+			n.neighLock.Lock()
 			n.neighDiscoveryLink = link
+			// As neighDiscoveryLink can be accessed concurrently before it has
+			// been set by insertNeighbor() which is invoked by the periodic ARP
+			// refresher, we need to indicate whether neighDiscoveryLink is set.
+			// We cannot just use sync/atomic.{Load,Store}Pointer(), as it's an
+			// interface. Also, we cannot just keep the lock in insertNeighbor()
+			// while accessing the link, as it would make parallel arpings not
+			// possible.  Concurrent access of the link in insertNeighbor() once
+			// it has been set is OK, as the method does not modify it.
+			n.neighDiscoveryLinkIsSet = true
+			n.neighLock.Unlock()
 		}
 	}
 
