@@ -1094,6 +1094,8 @@ int to_host(struct __ctx_buff *ctx)
 		traced = true;
 	}
 
+	ctx_change_type(ctx, PACKET_HOST);
+
 	if (!traced)
 		send_trace_notify(ctx, TRACE_TO_STACK, srcID, 0, 0,
 				  CILIUM_IFINDEX, ret, 0);
