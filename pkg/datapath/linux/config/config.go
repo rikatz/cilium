@@ -443,7 +443,7 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 		// an IPv4 address to use by selecting link IPAddr. In case with
 		// kernel support, the kernel datapath will use the FIB lookup helper
 		// and this define is ignored.
-		link, err := netlink.LinkByName(iface[0])
+		link, err := netlink.LinkByName(defaults.HostDevice)
 		if err == nil {
 			addr, err := netlink.AddrList(link, netlink.FAMILY_V4)
 			if err != nil {
